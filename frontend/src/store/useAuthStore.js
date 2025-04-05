@@ -3,7 +3,8 @@ import { axiosInstance } from "../lib/axios.js";
 import toast from "react-hot-toast";
 import { io } from "socket.io-client";
 
-const BASE_URL = import.meta.env.MODE === "development" ? "http://localhost:5001" : "/";
+const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+console.log("API Base URL:", BASE_URL);
 
 export const useAuthStore = create((set, get) => ({
   authUser: null,
@@ -17,7 +18,6 @@ export const useAuthStore = create((set, get) => ({
   checkAuth: async () => {
     try {
       const res = await axiosInstance.get("/auth/check");
-
       set({ authUser: res.data });
       get().connectSocket();
     } catch (error) {
@@ -31,12 +31,13 @@ export const useAuthStore = create((set, get) => ({
   signup: async (data) => {
     set({ isSigningUp: true });
     try {
+      console.log("Data ::", data);
       const res = await axiosInstance.post("/auth/signup", data);
       set({ authUser: res.data });
       toast.success("Account created successfully");
       get().connectSocket();
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(error.response?.data?.message || "Something went wrong!");
     } finally {
       set({ isSigningUp: false });
     }
@@ -46,12 +47,18 @@ export const useAuthStore = create((set, get) => ({
     set({ isLoggingIn: true });
     try {
       const res = await axiosInstance.post("/auth/login", data);
-      set({ authUser: res.data });
-      toast.success("Logged in successfully");
 
-      get().connectSocket();
+      if (res) {
+        set({ authUser: res.data });
+        toast.success("Logged in successfully");
+        console.log("calling socket.io");
+        get().connectSocket();
+        console.log("new user connected!");
+      } else {
+        toast.error("Something went wrong!");
+      }
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(error.response?.data?.message || "Something went wrong!");
     } finally {
       set({ isLoggingIn: false });
     }
@@ -64,7 +71,7 @@ export const useAuthStore = create((set, get) => ({
       toast.success("Logged out successfully");
       get().disconnectSocket();
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(error.response?.data?.message || "Something went wrong!");
     }
   },
 
@@ -75,8 +82,8 @@ export const useAuthStore = create((set, get) => ({
       set({ authUser: res.data });
       toast.success("Profile updated successfully");
     } catch (error) {
-      console.log("error in update profile:", error);
-      toast.error(error.response.data.message);
+      console.log("Error in update profile:", error);
+      toast.error(error.response?.data?.message || "Something went wrong!");
     } finally {
       set({ isUpdatingProfile: false });
     }
@@ -84,22 +91,43 @@ export const useAuthStore = create((set, get) => ({
 
   connectSocket: () => {
     const { authUser } = get();
-    if (!authUser || get().socket?.connected) return;
-
-    const socket = io(BASE_URL, {
-      query: {
-        userId: authUser._id,
-      },
+  
+    if (!authUser || !authUser._id || get().socket?.connected) return;
+  
+    console.log("Connecting socket for user:", authUser._id);
+  
+    const newSocket = io(BASE_URL, {
+      query: { userId: authUser._id },
+      transports: ["websocket"], // Ensure WebSocket is used for better real-time performance
     });
-    socket.connect();
-
-    set({ socket: socket });
-
-    socket.on("getOnlineUsers", (userIds) => {
+  
+    newSocket.on("connect", () => {
+      console.log("Socket connected:", newSocket.id);
+      set({ socket: newSocket }); // Set socket only after it's connected
+    });
+  
+    newSocket.on("connect_error", (err) => {
+      console.error("Socket connection error:", err.message);
+    });
+  
+    newSocket.on("disconnect", () => {
+      console.warn("Socket disconnected. Attempting to reconnect...");
+    });
+  
+    newSocket.on("getOnlineUsers", (userIds) => {
       set({ onlineUsers: userIds });
+      console.log("Updated online users:", get().onlineUsers);
     });
-  },
+  },  
+
   disconnectSocket: () => {
-    if (get().socket?.connected) get().socket.disconnect();
+    const socket = get().socket;
+    if (socket.connected) {
+      socket.off("connect_error");
+      socket.off("disconnect");
+      socket.off("getOnlineUsers");
+      socket.disconnect();
+      set({ socket: null });
+    }
   },
 }));
